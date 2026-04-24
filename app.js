@@ -16,6 +16,7 @@
   const activeState = $('active-state');
   const btnStart = $('btn-start');
   const btnCheckout = $('btn-checkout');
+  const btnCalendar = $('btn-calendar');
   const btnEditTime = $('btn-edit-time');
   const parkTimeEl = $('park-time');
   const elapsedDisplayEl = $('elapsed-display');
@@ -224,6 +225,7 @@
   function bindEvents() {
     btnStart.addEventListener('click', startParking);
     btnCheckout.addEventListener('click', checkout);
+    btnCalendar.addEventListener('click', exportToCalendar);
     btnEditTime.addEventListener('click', showEditModal);
     btnSaveTime.addEventListener('click', saveEditedTime);
     btnCancelEdit.addEventListener('click', hideEditModal);
@@ -315,6 +317,98 @@
     document.body.classList.remove('urgent-pulse');
     updateUI();
     vibrate(50);
+  }
+
+  /* ========== Calendar Export ========== */
+  function exportToCalendar() {
+    if (!parkingData) return;
+    
+    const parkTimeMs = new Date(parkingData.parkTime).getTime();
+    const cycleEnd = getCycleEndMs();
+    const now = Date.now();
+    
+    // Calculate the next 3 upcoming thresholds
+    const thresholds = [];
+    let baseTime = parkTimeMs;
+    let feeBase = 0;
+    
+    if (cycleEnd && parkTimeMs < cycleEnd) {
+      baseTime = cycleEnd;
+    }
+    
+    // 1h threshold
+    const t1 = baseTime + ONE_HOUR;
+    if (t1 > now) thresholds.push({ time: t1, fee: feeBase + 5 });
+    
+    // 12h, 24h, 36h... thresholds
+    let cycle = 1;
+    while (thresholds.length < 2) {
+      const t = baseTime + cycle * TWELVE_HOURS;
+      if (t > now) thresholds.push({ time: t, fee: feeBase + (cycle + 1) * 5 });
+      cycle++;
+    }
+
+    const formatICSDate = (date) => {
+      return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    };
+    
+    const dtstamp = formatICSDate(new Date());
+    let icsEvents = '';
+    
+    thresholds.forEach((th) => {
+      const startDate = new Date(th.time);
+      const endDate = new Date(th.time + 15 * 60 * 1000); // 15 mins later
+      const uid = `parking-${parkTimeMs}-${th.time}@parking-reminder`;
+      
+      const summary = `🅿️ 停车缴费提醒 (即将计费 ¥${th.fee})`;
+      const description = `您的停车费即将增加到 ¥${th.fee}，请尽快缴费离场！`;
+      
+      icsEvents += [
+        'BEGIN:VEVENT',
+        `UID:${uid}`,
+        `DTSTAMP:${dtstamp}`,
+        `DTSTART:${formatICSDate(startDate)}`,
+        `DTEND:${formatICSDate(endDate)}`,
+        `SUMMARY:${summary}`,
+        `DESCRIPTION:${description}`,
+        'BEGIN:VALARM',
+        'TRIGGER:-PT10M', // 10 minutes before
+        'ACTION:DISPLAY',
+        `DESCRIPTION:${summary}`,
+        'END:VALARM',
+        'END:VEVENT',
+        ''
+      ].join('\r\n');
+    });
+
+    const icsContent = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Parking Reminder//CN',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH',
+      icsEvents.trim(),
+      'END:VCALENDAR'
+    ].join('\r\n');
+
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    
+    if (isAndroid) {
+      // Android must download ICS to import multiple events
+      const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'parking-reminder-batch.ics';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      alert('安卓设备已下载批量日历文件，请在通知栏或文件中点击打开以导入提醒！');
+    } else {
+      // iOS / Universal Data URI supports multiple events natively
+      window.location.href = 'data:text/calendar;charset=utf8,' + encodeURIComponent(icsContent);
+    }
   }
 
   /* ========== Time Edit ========== */
