@@ -388,6 +388,37 @@
     const summary = `🅿️ 停车缴费提醒 (即将计费 ¥${th.fee})`;
     const description = `您的停车费即将增加到 ¥${th.fee}，请尽快缴费离场！`;
 
+    const formatICSDate = (date) => {
+      return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    };
+    
+    const uid = `parking-${parkTimeMs}-${eventTimeMs}@parking-reminder`;
+    const dtstamp = formatICSDate(new Date());
+    const dtstart = formatICSDate(startDate);
+    const dtend = formatICSDate(endDate);
+    
+    const icsContent = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Parking Reminder//CN',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH',
+      'BEGIN:VEVENT',
+      `UID:${uid}`,
+      `DTSTAMP:${dtstamp}`,
+      `DTSTART:${dtstart}`,
+      `DTEND:${dtend}`,
+      `SUMMARY:${summary}`,
+      `DESCRIPTION:${description}`,
+      'BEGIN:VALARM',
+      'TRIGGER:-PT10M', // 10 minutes before
+      'ACTION:DISPLAY',
+      `DESCRIPTION:${summary}`,
+      'END:VALARM',
+      'END:VEVENT',
+      'END:VCALENDAR'
+    ].join('\r\n');
+
     const isAndroid = /Android/i.test(navigator.userAgent);
     
     if (isAndroid) {
@@ -400,40 +431,40 @@
         `l.beginTime=${eventTimeMs};` +
         `l.endTime=${endDate.getTime()};` +
         `end;`;
-      window.location.href = intentUrl;
+        
+      // Use an <a> tag to trigger intent, sometimes bypasses basic blocks
+      const a = document.createElement('a');
+      a.href = intentUrl;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      // Deep link fallback detection
+      const start = Date.now();
+      setTimeout(() => {
+        // If document is hidden, intent successfully opened the Calendar app
+        if (document.hidden) return; 
+        
+        // If we are still here, intent was blocked/ignored by the system/browser
+        if (Date.now() - start < 1500) {
+          const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const dl = document.createElement('a');
+          dl.href = url;
+          
+          const timeLabel = `${new Date(eventTimeMs).getHours()}点${new Date(eventTimeMs).getMinutes()}分`;
+          dl.download = `停车提醒_${timeLabel}.ics`;
+          
+          document.body.appendChild(dl);
+          dl.click();
+          document.body.removeChild(dl);
+          URL.revokeObjectURL(url);
+          
+          alert('检测到您的系统或浏览器拦截了直接跳转 😅\n已为您自动下载备用日历文件，请在通知栏点击打开以导入提醒！');
+        }
+      }, 800);
     } else {
       // Seamless iOS/Universal approach
-      const formatICSDate = (date) => {
-        return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-      };
-      
-      const uid = `parking-${parkTimeMs}-${eventTimeMs}@parking-reminder`;
-      const dtstamp = formatICSDate(new Date());
-      const dtstart = formatICSDate(startDate);
-      const dtend = formatICSDate(endDate);
-      
-      const icsContent = [
-        'BEGIN:VCALENDAR',
-        'VERSION:2.0',
-        'PRODID:-//Parking Reminder//CN',
-        'CALSCALE:GREGORIAN',
-        'METHOD:PUBLISH',
-        'BEGIN:VEVENT',
-        `UID:${uid}`,
-        `DTSTAMP:${dtstamp}`,
-        `DTSTART:${dtstart}`,
-        `DTEND:${dtend}`,
-        `SUMMARY:${summary}`,
-        `DESCRIPTION:${description}`,
-        'BEGIN:VALARM',
-        'TRIGGER:-PT10M', // 10 minutes before
-        'ACTION:DISPLAY',
-        `DESCRIPTION:${summary}`,
-        'END:VALARM',
-        'END:VEVENT',
-        'END:VCALENDAR'
-      ].join('\r\n');
-      
       window.location.href = 'data:text/calendar;charset=utf8,' + encodeURIComponent(icsContent);
     }
   }
