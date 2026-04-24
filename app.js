@@ -422,10 +422,10 @@
     const isAndroid = /Android/i.test(navigator.userAgent);
     
     if (isAndroid) {
-      // Seamless Android Intent
-      const intentUrl = `intent://#Intent;` +
+      // Seamless Android Intent - using explicit content scheme to avoid MIUI ICS importer bug
+      const intentUrl = `intent://com.android.calendar/events#Intent;` +
+        `scheme=content;` +
         `action=android.intent.action.INSERT;` +
-        `type=vnd.android.cursor.item/event;` +
         `S.title=${encodeURIComponent(summary)};` +
         `S.description=${encodeURIComponent(description)};` +
         `l.beginTime=${eventTimeMs};` +
