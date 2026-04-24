@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0a0a1a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="停车缴费提醒 - 12小时到期前自动提醒缴费离场">
+  <title>停车缴费提醒</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="icon" type="image/png" href="icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-content">
+        <h1>🅿️ 停车提醒</h1>
+        <p class="header-sub">12小时到期自动提醒</p>
+      </div>
+    </header>
+
+    <main>
+      <!-- ===== Idle State ===== -->
+      <section id="idle-state">
+        <div class="hero-card">
+          <div class="hero-icon">
+            <svg viewBox="0 0 80 80" fill="none">
+              <rect x="8" y="16" width="64" height="48" rx="8" stroke="currentColor" stroke-width="3"/>
+              <path d="M32 28h8a8 8 0 010 16h-8V28z" stroke="currentColor" stroke-width="3"/>
+              <line x1="32" y1="44" x2="32" y2="52" stroke="currentColor" stroke-width="3"/>
+            </svg>
+          </div>
+          <p class="hero-text">到达车库后，点击下方按钮<br>开始记录泊车时间</p>
+          <button id="btn-start" class="btn-primary btn-large">
+            <span class="btn-icon">🚗</span>
+            <span>开始泊车</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- ===== Active State ===== -->
+      <section id="active-state" class="hidden">
+        <!-- Status Card -->
+        <div class="status-card">
+          <div class="status-row">
+            <div class="status-item">
+              <span class="status-label">入库时间</span>
+              <span class="status-value" id="park-time">--:--</span>
+            </div>
+            <div class="status-item">
+              <span class="status-label">到期时间</span>
+              <span class="status-value" id="expire-time">--:--</span>
+            </div>
+            <div class="status-item">
+              <span class="status-label">当前费用</span>
+              <span class="status-value fee-value" id="fee-badge">¥5</span>
+            </div>
+          </div>
+          <button id="btn-edit-time" class="btn-text" title="修改入库时间">✏️ 修改时间</button>
+        </div>
+
+        <!-- Countdown Ring -->
+        <div class="countdown-card">
+          <div class="countdown-ring-wrap">
+            <svg class="countdown-ring" viewBox="0 0 220 220">
+              <defs>
+                <linearGradient id="grad-normal" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#06b6d4"/>
+                  <stop offset="100%" stop-color="#8b5cf6"/>
+                </linearGradient>
+                <linearGradient id="grad-warning" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#f59e0b"/>
+                  <stop offset="100%" stop-color="#ef4444"/>
+                </linearGradient>
+                <linearGradient id="grad-urgent" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#ef4444"/>
+                  <stop offset="100%" stop-color="#dc2626"/>
+                </linearGradient>
+              </defs>
+              <circle class="ring-bg" cx="110" cy="110" r="96"
+                      fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="10"/>
+              <circle id="ring-progress" class="ring-progress" cx="110" cy="110" r="96"
+                      fill="none" stroke="url(#grad-normal)" stroke-width="10"
+                      stroke-linecap="round" transform="rotate(-90 110 110)"/>
+            </svg>
+            <div class="countdown-inner">
+              <span class="countdown-label" id="countdown-label">距离到期还有</span>
+              <span class="countdown-value" id="countdown">--:--:--</span>
+              <span class="countdown-date" id="countdown-date"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="action-group">
+          <button id="btn-checkout" class="btn-secondary btn-large">
+            <span class="btn-icon">✅</span>
+            <span>已缴费出库</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- ===== History ===== -->
+      <section id="history-section">
+        <div class="section-header">
+          <h2>📋 停车记录</h2>
+          <button id="btn-clear-history" class="btn-text-small">清空</button>
+        </div>
+        <div id="history-list" class="history-list">
+          <p class="empty-hint">暂无停车记录</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- ===== Time Edit Modal ===== -->
+    <div id="time-edit-modal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <h3>修改入库时间</h3>
+        <input type="datetime-local" id="time-input" class="time-input">
+        <div class="modal-actions">
+          <button id="btn-cancel-edit" class="btn-modal-cancel">取消</button>
+          <button id="btn-save-time" class="btn-modal-confirm">确认</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Notification Permission Banner -->
+    <div id="notif-banner" class="notif-banner hidden">
+      <p>开启通知权限，到期前自动提醒你缴费</p>
+      <button id="btn-enable-notif" class="btn-notif">开启通知</button>
+      <button id="btn-dismiss-notif" class="btn-notif-dismiss">✕</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
