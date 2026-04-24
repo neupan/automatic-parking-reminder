@@ -268,8 +268,32 @@ main {
   transition: color var(--transition);
 }
 
+.fee-value.fee-free {
+  color: var(--cyan);
+}
+
 .fee-value.overtime {
   color: var(--red);
+}
+
+/* ========== Billing Cycle Status ========== */
+.cycle-status {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--green);
+  line-height: 1.4;
+}
+
+.cycle-icon {
+  font-size: 14px;
+  flex-shrink: 0;
 }
 
 /* ========== Countdown Ring ========== */

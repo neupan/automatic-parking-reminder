@@ -2,11 +2,13 @@
   'use strict';
 
   /* ========== Constants ========== */
+  const ONE_HOUR = 1 * 60 * 60 * 1000;
   const TWELVE_HOURS = 12 * 60 * 60 * 1000;
-  const REMINDER_BEFORE = 20 * 60 * 1000; // 20 minutes before deadline
-  const CIRCUMFERENCE = 2 * Math.PI * 96; // ring radius = 96
+  const REMINDER_BEFORE = 10 * 60 * 1000; // 10 min before fee increase
+  const CIRCUMFERENCE = 2 * Math.PI * 96;
   const STORAGE_KEY = 'parkingData';
   const HISTORY_KEY = 'parkingHistory';
+  const BILLING_CYCLE_KEY = 'billingCycle';
 
   /* ========== DOM Elements ========== */
   const $ = (id) => document.getElementById(id);
@@ -16,7 +18,7 @@
   const btnCheckout = $('btn-checkout');
   const btnEditTime = $('btn-edit-time');
   const parkTimeEl = $('park-time');
-  const expireTimeEl = $('expire-time');
+  const elapsedDisplayEl = $('elapsed-display');
   const feeBadgeEl = $('fee-badge');
   const countdownEl = $('countdown');
   const countdownLabelEl = $('countdown-label');
@@ -31,15 +33,156 @@
   const notifBanner = $('notif-banner');
   const btnEnableNotif = $('btn-enable-notif');
   const btnDismissNotif = $('btn-dismiss-notif');
+  const cycleStatusEl = $('cycle-status');
+  const cycleInfoEl = $('cycle-info');
 
   /* ========== State ========== */
   let parkingData = null;
+  let billingCycle = null; // { cycleStart: ISO, cycleEnd: ISO }
   let tickInterval = null;
   let reminderTimeout = null;
+
+  /* ==========================================================
+     Billing Cycle Logic (Nanjing Rules)
+     ----------------------------------------------------------
+     - ≤ 1h per entry: free
+     - > 1h per entry: ¥5 per 12h cycle
+     - Within the same 12h billing cycle, multiple entries
+       are charged only once (¥5 total).
+     - After 12h, a new cycle begins.
+     ========================================================== */
+
+  // Load billing cycle from localStorage
+  function loadBillingCycle() {
+    try {
+      const stored = localStorage.getItem(BILLING_CYCLE_KEY);
+      if (stored) {
+        billingCycle = JSON.parse(stored);
+        // Clean up expired cycles
+        if (Date.now() > new Date(billingCycle.cycleEnd).getTime()) {
+          billingCycle = null;
+          localStorage.removeItem(BILLING_CYCLE_KEY);
+        }
+      }
+    } catch (e) {
+      billingCycle = null;
+    }
+  }
+
+  function saveBillingCycle() {
+    if (billingCycle) {
+      localStorage.setItem(BILLING_CYCLE_KEY, JSON.stringify(billingCycle));
+    } else {
+      localStorage.removeItem(BILLING_CYCLE_KEY);
+    }
+  }
+
+  // Is the current moment within an active (previously paid) billing cycle?
+  function isWithinPaidCycle() {
+    if (!billingCycle) return false;
+    return Date.now() < new Date(billingCycle.cycleEnd).getTime();
+  }
+
+  // Get the cycle end timestamp (ms), or null
+  function getCycleEndMs() {
+    if (!billingCycle) return null;
+    return new Date(billingCycle.cycleEnd).getTime();
+  }
+
+  /* ========== Fee Calculation ========== */
+
+  // Calculate fee for the current session, considering billing cycle
+  function calculateFee(elapsedMs, parkTimeMs) {
+    const now = parkTimeMs + elapsedMs;
+    const cycleEnd = getCycleEndMs();
+
+    // If within a paid billing cycle, portion before cycleEnd is free
+    if (cycleEnd && parkTimeMs < cycleEnd) {
+      if (now <= cycleEnd) {
+        return 0; // entirely within paid cycle
+      }
+      // Session extends beyond cycle — bill only the post-cycle portion
+      const afterCycleElapsed = now - cycleEnd;
+      if (afterCycleElapsed <= ONE_HOUR) return 0; // 1h free in new cycle
+      return Math.ceil(afterCycleElapsed / TWELVE_HOURS) * 5;
+    }
+
+    // Normal calculation (no active cycle)
+    if (elapsedMs <= ONE_HOUR) return 0;
+    return Math.ceil(elapsedMs / TWELVE_HOURS) * 5;
+  }
+
+  // Find the next time the fee will increase
+  function getNextThreshold(elapsedMs, parkTimeMs) {
+    const now = parkTimeMs + elapsedMs;
+    const cycleEnd = getCycleEndMs();
+
+    // Within a paid billing cycle
+    if (cycleEnd && parkTimeMs < cycleEnd && now < cycleEnd) {
+      // Next threshold: cycle ends, then 1h free, then ¥5
+      const thresholdMs = (cycleEnd - parkTimeMs) + ONE_HOUR;
+      return { threshold: thresholdMs, nextFee: 5, isCycleEnd: true,
+               cycleRemaining: cycleEnd - now };
+    }
+
+    // Post-cycle or no cycle: calculate from the effective start
+    let effectiveElapsed = elapsedMs;
+    let feeBase = 0;
+
+    if (cycleEnd && parkTimeMs < cycleEnd) {
+      // Session started within cycle but now past it
+      effectiveElapsed = now - cycleEnd;
+      feeBase = 0;
+    }
+
+    if (effectiveElapsed < ONE_HOUR) {
+      const effectiveStart = cycleEnd && parkTimeMs < cycleEnd ? cycleEnd : parkTimeMs;
+      return {
+        threshold: effectiveStart - parkTimeMs + ONE_HOUR,
+        nextFee: feeBase + 5,
+      };
+    }
+
+    const n = Math.ceil(effectiveElapsed / TWELVE_HOURS);
+    const effectiveStart = cycleEnd && parkTimeMs < cycleEnd ? cycleEnd : parkTimeMs;
+    const nextThresholdAbs = effectiveStart + ONE_HOUR + (effectiveElapsed > ONE_HOUR ? n * TWELVE_HOURS : 0);
+
+    // Simplified: find next 12h boundary
+    const currentCycles = Math.ceil(effectiveElapsed / TWELVE_HOURS);
+    const nextBoundary = currentCycles * TWELVE_HOURS;
+
+    if (effectiveElapsed < nextBoundary) {
+      const offset = (cycleEnd && parkTimeMs < cycleEnd) ? cycleEnd - parkTimeMs : 0;
+      return {
+        threshold: offset + nextBoundary,
+        nextFee: (currentCycles + 1) * 5 + feeBase,
+      };
+    }
+
+    const offset = (cycleEnd && parkTimeMs < cycleEnd) ? cycleEnd - parkTimeMs : 0;
+    return {
+      threshold: offset + (currentCycles + 1) * TWELVE_HOURS,
+      nextFee: (currentCycles + 2) * 5 + feeBase,
+    };
+  }
+
+  // Simple version for no-cycle case
+  function getNextThresholdSimple(elapsedMs) {
+    if (elapsedMs < ONE_HOUR) {
+      return { threshold: ONE_HOUR, nextFee: 5 };
+    }
+    const n = Math.ceil(elapsedMs / TWELVE_HOURS);
+    const nextThreshold = n * TWELVE_HOURS;
+    if (elapsedMs < nextThreshold) {
+      return { threshold: nextThreshold, nextFee: (n + 1) * 5 };
+    }
+    return { threshold: (n + 1) * TWELVE_HOURS, nextFee: (n + 2) * 5 };
+  }
 
   /* ========== Initialize ========== */
   function init() {
     loadData();
+    loadBillingCycle();
     bindEvents();
     checkNotificationPermission();
     registerServiceWorker();
@@ -96,15 +239,14 @@
       });
     }
 
-    // Re-check when app becomes visible
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
+        loadBillingCycle(); // refresh cycle status
         checkAndNotify();
         updateUI();
       }
     });
 
-    // Close modal on overlay click
     timeEditModal.addEventListener('click', (e) => {
       if (e.target === timeEditModal) hideEditModal();
     });
@@ -112,9 +254,10 @@
 
   /* ========== Core Actions ========== */
   function startParking() {
+    loadBillingCycle(); // check latest cycle
     parkingData = {
       parkTime: new Date().toISOString(),
-      reminderSent: false,
+      notifiedThresholds: [],
     };
     saveData();
     scheduleReminder();
@@ -125,16 +268,40 @@
   function checkout() {
     if (!parkingData) return;
 
-    const parkTime = new Date(parkingData.parkTime);
-    const now = new Date();
-    const duration = now - parkTime;
-    const fee = duration > TWELVE_HOURS ? 10 : 5;
+    const parkTimeMs = new Date(parkingData.parkTime).getTime();
+    const now = Date.now();
+    const duration = now - parkTimeMs;
+    const fee = calculateFee(duration, parkTimeMs);
+
+    // Save billing cycle if this session incurred a charge
+    if (fee > 0) {
+      // Determine the last active 12h cycle boundary
+      const cycleEnd = getCycleEndMs();
+      let effectiveStart;
+
+      if (cycleEnd && parkTimeMs < cycleEnd) {
+        // Session extended beyond previous cycle
+        effectiveStart = cycleEnd;
+      } else {
+        effectiveStart = parkTimeMs;
+      }
+
+      const effectiveElapsed = now - effectiveStart;
+      const numCycles = Math.ceil(effectiveElapsed / TWELVE_HOURS);
+      const lastCycleStart = effectiveStart + (numCycles - 1) * TWELVE_HOURS;
+
+      billingCycle = {
+        cycleStart: new Date(lastCycleStart).toISOString(),
+        cycleEnd: new Date(lastCycleStart + TWELVE_HOURS).toISOString(),
+      };
+      saveBillingCycle();
+    }
 
     // Add to history
     const history = getHistory();
     history.unshift({
       parkTime: parkingData.parkTime,
-      checkoutTime: now.toISOString(),
+      checkoutTime: new Date(now).toISOString(),
       duration,
       fee,
     });
@@ -153,8 +320,7 @@
   /* ========== Time Edit ========== */
   function showEditModal() {
     if (!parkingData) return;
-    const dt = new Date(parkingData.parkTime);
-    timeInput.value = toLocalISOString(dt);
+    timeInput.value = toLocalISOString(new Date(parkingData.parkTime));
     timeEditModal.classList.remove('hidden');
   }
 
@@ -172,7 +338,7 @@
       return;
     }
     parkingData.parkTime = newTime.toISOString();
-    parkingData.reminderSent = false;
+    parkingData.notifiedThresholds = [];
     saveData();
     scheduleReminder();
     updateUI();
@@ -194,69 +360,93 @@
   }
 
   function updateActiveUI() {
-    const parkTime = new Date(parkingData.parkTime);
-    const expireTime = new Date(parkTime.getTime() + TWELVE_HOURS);
-    const now = new Date();
-    const elapsed = now - parkTime;
-    const remaining = TWELVE_HOURS - elapsed;
+    const parkTimeMs = new Date(parkingData.parkTime).getTime();
+    const now = Date.now();
+    const elapsed = now - parkTimeMs;
+    const currentFee = calculateFee(elapsed, parkTimeMs);
+    const cycleEnd = getCycleEndMs();
+    const inPaidCycle = cycleEnd && parkTimeMs < cycleEnd && now < cycleEnd;
 
-    // Basic info
-    parkTimeEl.textContent = formatTime(parkTime);
-    expireTimeEl.textContent = formatTime(expireTime);
+    // Park time
+    parkTimeEl.textContent = formatTime(new Date(parkingData.parkTime));
 
-    // Show expire date if different from today
-    const today = new Date();
-    if (expireTime.toDateString() !== today.toDateString()) {
-      const month = expireTime.getMonth() + 1;
-      const day = expireTime.getDate();
-      countdownDateEl.textContent = `到期日: ${month}月${day}日`;
-    } else {
-      countdownDateEl.textContent = '';
-    }
+    // Elapsed
+    const elapsedH = Math.floor(elapsed / 3600000);
+    const elapsedM = Math.floor((elapsed % 3600000) / 60000);
+    elapsedDisplayEl.textContent = `${elapsedH}h${pad(elapsedM)}m`;
 
-    if (remaining > 0) {
-      // Within 12 hours
-      countdownEl.textContent = formatDuration(remaining);
-      countdownLabelEl.textContent = '距离到期还有';
-      feeBadgeEl.textContent = '¥5';
-      feeBadgeEl.classList.remove('overtime');
+    // Fee
+    feeBadgeEl.textContent = currentFee === 0 ? '免费' : `¥${currentFee}`;
+    feeBadgeEl.classList.toggle('overtime', currentFee >= 10);
+    feeBadgeEl.classList.toggle('fee-free', currentFee === 0);
+
+    // Billing cycle status banner
+    if (inPaidCycle) {
+      const cycleRemaining = cycleEnd - now;
+      const expireTime = formatTime(new Date(cycleEnd));
+      cycleStatusEl.classList.remove('hidden');
+      cycleInfoEl.textContent = `上次缴费覆盖至 ${expireTime}，本次暂不计费`;
+
+      // Countdown = time until cycle expires (then 1h free, then ¥5)
+      countdownEl.textContent = formatDuration(cycleRemaining);
+      countdownLabelEl.textContent = '缴费周期剩余';
+      countdownDateEl.textContent = '周期结束后 1小时内免费';
 
       // Ring progress
-      const progress = remaining / TWELVE_HOURS;
+      const totalCycleDuration = TWELVE_HOURS;
+      const cycleElapsed = totalCycleDuration - cycleRemaining;
+      const progress = cycleRemaining / totalCycleDuration;
       ringProgress.style.strokeDasharray = CIRCUMFERENCE;
       ringProgress.style.strokeDashoffset = CIRCUMFERENCE * (1 - progress);
+      ringProgress.setAttribute('stroke', 'url(#grad-normal)');
 
-      // Color states
+      countdownEl.classList.remove('warning', 'urgent', 'overtime');
+      document.body.classList.remove('urgent-pulse');
+    } else {
+      cycleStatusEl.classList.add('hidden');
+
+      // Determine effective elapsed for threshold calc
+      let effectiveElapsed = elapsed;
+      if (cycleEnd && parkTimeMs < cycleEnd) {
+        effectiveElapsed = now - cycleEnd;
+      }
+
+      const thresholdInfo = (cycleEnd && parkTimeMs < cycleEnd)
+        ? getNextThreshold(elapsed, parkTimeMs)
+        : getNextThresholdSimple(elapsed);
+      const remaining = (thresholdInfo.threshold * 1) - elapsed;
+
+      // Countdown
+      countdownEl.textContent = formatDuration(Math.max(0, remaining));
+
+      if (currentFee === 0 && !(cycleEnd && parkTimeMs < cycleEnd)) {
+        countdownLabelEl.textContent = '免费时间剩余';
+        countdownDateEl.textContent = `超时后费用: ¥${thresholdInfo.nextFee}`;
+      } else {
+        countdownLabelEl.textContent = '距离下次加费还有';
+        countdownDateEl.textContent = `下次费用: ¥${thresholdInfo.nextFee}`;
+      }
+
+      // Ring & colors
+      const periodDuration = (currentFee === 0 && effectiveElapsed < ONE_HOUR)
+        ? ONE_HOUR : TWELVE_HOURS;
+      const progress = Math.max(0, remaining) / periodDuration;
+      ringProgress.style.strokeDasharray = CIRCUMFERENCE;
+      ringProgress.style.strokeDashoffset = CIRCUMFERENCE * (1 - Math.min(1, progress));
+
       countdownEl.classList.remove('warning', 'urgent', 'overtime');
       document.body.classList.remove('urgent-pulse');
 
-      if (remaining <= REMINDER_BEFORE) {
-        // < 20 min: urgent
+      if (remaining <= REMINDER_BEFORE && remaining > 0) {
         ringProgress.setAttribute('stroke', 'url(#grad-urgent)');
         countdownEl.classList.add('urgent');
         document.body.classList.add('urgent-pulse');
-      } else if (remaining <= 60 * 60 * 1000) {
-        // < 1 hour: warning
+      } else if (remaining <= 30 * 60 * 1000 && remaining > 0) {
         ringProgress.setAttribute('stroke', 'url(#grad-warning)');
         countdownEl.classList.add('warning');
       } else {
-        // normal
         ringProgress.setAttribute('stroke', 'url(#grad-normal)');
       }
-    } else {
-      // Overtime
-      const overtime = Math.abs(remaining);
-      countdownEl.textContent = '+' + formatDuration(overtime);
-      countdownLabelEl.textContent = '已超过12小时';
-      feeBadgeEl.textContent = '¥10';
-      feeBadgeEl.classList.add('overtime');
-      countdownEl.classList.remove('warning', 'urgent');
-      countdownEl.classList.add('overtime');
-
-      ringProgress.style.strokeDasharray = CIRCUMFERENCE;
-      ringProgress.style.strokeDashoffset = 0;
-      ringProgress.setAttribute('stroke', 'url(#grad-urgent)');
-      document.body.classList.add('urgent-pulse');
     }
   }
 
@@ -266,28 +456,23 @@
       historyList.innerHTML = '<p class="empty-hint">暂无停车记录</p>';
       return;
     }
-
-    historyList.innerHTML = history
-      .slice(0, 20)
-      .map((item) => {
-        const parkTime = new Date(item.parkTime);
-        const checkoutTime = new Date(item.checkoutTime);
-        const durH = Math.floor(item.duration / 3600000);
-        const durM = Math.floor((item.duration % 3600000) / 60000);
-        const dateStr = `${parkTime.getMonth() + 1}/${parkTime.getDate()}`;
-        const feeClass = item.fee <= 5 ? 'fee-5' : 'fee-10';
-
-        return `
-          <div class="history-item">
-            <div class="history-info">
-              <span class="history-date">${dateStr} ${formatTime(parkTime)} → ${formatTime(checkoutTime)}</span>
-              <span class="history-duration">停车 ${durH}小时${durM}分钟</span>
-            </div>
-            <span class="history-fee ${feeClass}">¥${item.fee}</span>
+    historyList.innerHTML = history.slice(0, 20).map((item) => {
+      const pt = new Date(item.parkTime);
+      const ct = new Date(item.checkoutTime);
+      const durH = Math.floor(item.duration / 3600000);
+      const durM = Math.floor((item.duration % 3600000) / 60000);
+      const dateStr = `${pt.getMonth() + 1}/${pt.getDate()}`;
+      const feeClass = item.fee === 0 ? 'fee-5' : item.fee <= 5 ? 'fee-5' : 'fee-10';
+      const feeText = item.fee === 0 ? '免费' : `¥${item.fee}`;
+      return `
+        <div class="history-item">
+          <div class="history-info">
+            <span class="history-date">${dateStr} ${formatTime(pt)} → ${formatTime(ct)}</span>
+            <span class="history-duration">停车 ${durH}小时${durM}分钟</span>
           </div>
-        `;
-      })
-      .join('');
+          <span class="history-fee ${feeClass}">${feeText}</span>
+        </div>`;
+    }).join('');
   }
 
   /* ========== Ticker ========== */
@@ -313,9 +498,7 @@
     if (!('Notification' in window)) return;
     Notification.requestPermission().then((perm) => {
       notifBanner.classList.add('hidden');
-      if (perm === 'granted' && parkingData) {
-        scheduleReminder();
-      }
+      if (perm === 'granted' && parkingData) scheduleReminder();
     });
   }
 
@@ -323,68 +506,91 @@
     clearTimeout(reminderTimeout);
     if (!parkingData) return;
 
-    const parkTime = new Date(parkingData.parkTime);
-    const reminderTime = parkTime.getTime() + TWELVE_HOURS - REMINDER_BEFORE;
-    const delay = reminderTime - Date.now();
+    const parkTimeMs = new Date(parkingData.parkTime).getTime();
+    const elapsed = Date.now() - parkTimeMs;
+    const cycleEnd = getCycleEndMs();
+    const inPaidCycle = cycleEnd && parkTimeMs < cycleEnd && Date.now() < cycleEnd;
 
+    let nextThresholdMs;
+    if (inPaidCycle) {
+      // Next meaningful threshold: cycle end + 1h (when ¥5 would apply)
+      nextThresholdMs = cycleEnd + ONE_HOUR;
+    } else {
+      const info = (cycleEnd && parkTimeMs < cycleEnd)
+        ? getNextThreshold(elapsed, parkTimeMs)
+        : getNextThresholdSimple(elapsed);
+      nextThresholdMs = parkTimeMs + info.threshold;
+    }
+
+    const delay = nextThresholdMs - REMINDER_BEFORE - Date.now();
     if (delay > 0) {
-      // Schedule in main thread
       reminderTimeout = setTimeout(() => {
         sendNotification();
+        scheduleReminder(); // schedule next
       }, delay);
-
-      // Also try to schedule in Service Worker
-      if (navigator.serviceWorker && navigator.serviceWorker.controller) {
-        navigator.serviceWorker.controller.postMessage({
-          type: 'SCHEDULE_REMINDER',
-          delay: delay,
-        });
-      }
-    } else if (delay > -REMINDER_BEFORE && !parkingData.reminderSent) {
-      // Already past reminder time but within 12h - notify immediately
-      sendNotification();
     }
   }
 
   function checkAndNotify() {
-    if (!parkingData || parkingData.reminderSent) return;
+    if (!parkingData) return;
+    if (!parkingData.notifiedThresholds) parkingData.notifiedThresholds = [];
 
-    const parkTime = new Date(parkingData.parkTime);
-    const elapsed = Date.now() - parkTime.getTime();
-    const remaining = TWELVE_HOURS - elapsed;
+    const parkTimeMs = new Date(parkingData.parkTime).getTime();
+    const elapsed = Date.now() - parkTimeMs;
+    const cycleEnd = getCycleEndMs();
+    const inPaidCycle = cycleEnd && parkTimeMs < cycleEnd && Date.now() < cycleEnd;
+
+    if (inPaidCycle) return; // no fee upcoming while in paid cycle
+
+    const info = (cycleEnd && parkTimeMs < cycleEnd)
+      ? getNextThreshold(elapsed, parkTimeMs)
+      : getNextThresholdSimple(elapsed);
+    const remaining = info.threshold - elapsed;
 
     if (remaining <= REMINDER_BEFORE && remaining > 0) {
-      sendNotification();
+      const key = Math.round(info.threshold);
+      if (!parkingData.notifiedThresholds.includes(key)) {
+        sendNotification();
+      }
     }
   }
 
   function sendNotification() {
-    if (!parkingData || parkingData.reminderSent) return;
+    if (!parkingData) return;
+    if (!parkingData.notifiedThresholds) parkingData.notifiedThresholds = [];
 
-    parkingData.reminderSent = true;
+    const parkTimeMs = new Date(parkingData.parkTime).getTime();
+    const elapsed = Date.now() - parkTimeMs;
+    const cycleEnd = getCycleEndMs();
+
+    const info = (cycleEnd && parkTimeMs < cycleEnd)
+      ? getNextThreshold(elapsed, parkTimeMs)
+      : getNextThresholdSimple(elapsed);
+
+    const key = Math.round(info.threshold);
+    if (parkingData.notifiedThresholds.includes(key)) return;
+    parkingData.notifiedThresholds.push(key);
     saveData();
 
-    // Vibrate
     vibrate([200, 100, 200, 100, 200]);
 
-    // Browser notification
+    const currentFee = calculateFee(elapsed, parkTimeMs);
+    const body = currentFee === 0
+      ? `免费时间即将结束，10分钟后开始计费 ¥${info.nextFee}，请尽快缴费离场！`
+      : `停车费即将从 ¥${currentFee} 增加到 ¥${info.nextFee}，请尽快缴费离场！`;
+
     if ('Notification' in window && Notification.permission === 'granted') {
       try {
         new Notification('🅿️ 停车缴费提醒', {
-          body: '距离12小时到期还有约20分钟，请尽快缴费离场！当前费用 ¥5',
-          icon: './icon-192.png',
-          tag: 'parking-reminder',
-          requireInteraction: true,
+          body, icon: './icon-192.png',
+          tag: 'parking-reminder-' + key, requireInteraction: true,
         });
       } catch (e) {
-        // Fallback: try via Service Worker
         if (navigator.serviceWorker && navigator.serviceWorker.ready) {
           navigator.serviceWorker.ready.then((reg) => {
             reg.showNotification('🅿️ 停车缴费提醒', {
-              body: '距离12小时到期还有约20分钟，请尽快缴费离场！当前费用 ¥5',
-              icon: './icon-192.png',
-              tag: 'parking-reminder',
-              requireInteraction: true,
+              body, icon: './icon-192.png',
+              tag: 'parking-reminder-' + key, requireInteraction: true,
               vibrate: [200, 100, 200, 100, 200],
             });
           });
@@ -396,9 +602,7 @@
   /* ========== Service Worker ========== */
   function registerServiceWorker() {
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./sw.js').catch(() => {
-        // SW registration failed, notifications will still work in foreground
-      });
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
     }
   }
 
@@ -412,9 +616,7 @@
   /* ========== Utility Functions ========== */
   function formatTime(date) {
     return date.toLocaleTimeString('zh-CN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
+      hour: '2-digit', minute: '2-digit', hour12: false,
     });
   }
 
@@ -440,9 +642,7 @@
   }
 
   function vibrate(pattern) {
-    if (navigator.vibrate) {
-      navigator.vibrate(pattern);
-    }
+    if (navigator.vibrate) navigator.vibrate(pattern);
   }
 
   /* ========== Boot ========== */

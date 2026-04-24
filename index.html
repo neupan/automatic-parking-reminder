@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0a0a1a">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="description" content="停车缴费提醒 - 12小时到期前自动提醒缴费离场">
+  <meta name="description" content="停车缴费提醒 - 实时计费，加费前自动提醒缴费离场">
   <title>停车缴费提醒</title>
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icon-192.png">
@@ -19,7 +19,7 @@
     <header class="app-header">
       <div class="header-content">
         <h1>🅿️ 停车提醒</h1>
-        <p class="header-sub">12小时到期自动提醒</p>
+        <p class="header-sub">实时计费 · 加费前自动提醒</p>
       </div>
     </header>
 
@@ -52,13 +52,17 @@
               <span class="status-value" id="park-time">--:--</span>
             </div>
             <div class="status-item">
-              <span class="status-label">到期时间</span>
-              <span class="status-value" id="expire-time">--:--</span>
+              <span class="status-label">已停时长</span>
+              <span class="status-value" id="elapsed-display">--:--</span>
             </div>
             <div class="status-item">
               <span class="status-label">当前费用</span>
               <span class="status-value fee-value" id="fee-badge">¥5</span>
             </div>
+          </div>
+          <div id="cycle-status" class="cycle-status hidden">
+            <span class="cycle-icon">✅</span>
+            <span id="cycle-info">已缴费周期内，本次暂不计费</span>
           </div>
           <button id="btn-edit-time" class="btn-text" title="修改入库时间">✏️ 修改时间</button>
         </div>
@@ -130,7 +134,7 @@
 
     <!-- Notification Permission Banner -->
     <div id="notif-banner" class="notif-banner hidden">
-      <p>开启通知权限，到期前自动提醒你缴费</p>
+      <p>开启通知权限，加费前自动提醒你缴费</p>
       <button id="btn-enable-notif" class="btn-notif">开启通知</button>
       <button id="btn-dismiss-notif" class="btn-notif-dismiss">✕</button>
     </div>

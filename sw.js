@@ -36,14 +36,15 @@ self.addEventListener('fetch', (e) => {
 self.addEventListener('message', (e) => {
   if (e.data && e.data.type === 'SCHEDULE_REMINDER') {
     const delay = e.data.delay;
+    const nextFee = e.data.nextFee || 5;
     if (delay > 0) {
       setTimeout(() => {
         self.registration.showNotification('🅿️ 停车缴费提醒', {
-          body: '距离12小时到期还有20分钟，请尽快缴费离场！当前费用 ¥5',
+          body: `停车费即将增加到 ¥${nextFee}，请尽快缴费离场！`,
           icon: './icon-192.png',
           badge: './icon-192.png',
           vibrate: [200, 100, 200, 100, 200],
-          tag: 'parking-reminder',
+          tag: 'parking-reminder-' + Date.now(),
           requireInteraction: true,
           data: { url: './' }
         });
