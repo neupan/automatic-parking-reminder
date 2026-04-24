@@ -36,6 +36,9 @@
   const btnDismissNotif = $('btn-dismiss-notif');
   const cycleStatusEl = $('cycle-status');
   const cycleInfoEl = $('cycle-info');
+  const calendarModal = $('calendar-modal');
+  const calendarOptions = $('calendar-options');
+  const btnCancelCalendar = $('btn-cancel-calendar');
 
   /* ========== State ========== */
   let parkingData = null;
@@ -225,11 +228,12 @@
   function bindEvents() {
     btnStart.addEventListener('click', startParking);
     btnCheckout.addEventListener('click', checkout);
-    btnCalendar.addEventListener('click', exportToCalendar);
+    btnCalendar.addEventListener('click', showCalendarModal);
     btnEditTime.addEventListener('click', showEditModal);
     btnSaveTime.addEventListener('click', saveEditedTime);
     btnCancelEdit.addEventListener('click', hideEditModal);
     btnClearHistory.addEventListener('click', clearHistory);
+    btnCancelCalendar.addEventListener('click', hideCalendarModal);
 
     if (btnEnableNotif) {
       btnEnableNotif.addEventListener('click', requestNotificationPermission);
@@ -251,6 +255,10 @@
 
     timeEditModal.addEventListener('click', (e) => {
       if (e.target === timeEditModal) hideEditModal();
+    });
+
+    calendarModal.addEventListener('click', (e) => {
+      if (e.target === calendarModal) hideCalendarModal();
     });
   }
 
@@ -320,14 +328,13 @@
   }
 
   /* ========== Calendar Export ========== */
-  function exportToCalendar() {
+  function showCalendarModal() {
     if (!parkingData) return;
     
     const parkTimeMs = new Date(parkingData.parkTime).getTime();
     const cycleEnd = getCycleEndMs();
     const now = Date.now();
     
-    // Calculate the next 3 upcoming thresholds
     const thresholds = [];
     let baseTime = parkTimeMs;
     let feeBase = 0;
@@ -348,27 +355,74 @@
       cycle++;
     }
 
-    const formatICSDate = (date) => {
-      return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-    };
-    
-    const dtstamp = formatICSDate(new Date());
-    let icsEvents = '';
-    
-    thresholds.forEach((th) => {
-      const startDate = new Date(th.time);
-      const endDate = new Date(th.time + 15 * 60 * 1000); // 15 mins later
-      const uid = `parking-${parkTimeMs}-${th.time}@parking-reminder`;
+    calendarOptions.innerHTML = '';
+    thresholds.forEach(th => {
+      const btn = document.createElement('button');
+      btn.className = 'btn-calendar-option';
       
-      const summary = `🅿️ 停车缴费提醒 (即将计费 ¥${th.fee})`;
-      const description = `您的停车费即将增加到 ¥${th.fee}，请尽快缴费离场！`;
+      const d = new Date(th.time);
+      const today = new Date();
+      const isToday = d.getDate() === today.getDate() && d.getMonth() === today.getMonth();
+      const timeLabel = isToday ? `今天 ${formatTime(d)}` : `${d.getMonth() + 1}/${d.getDate()} ${formatTime(d)}`;
       
-      icsEvents += [
+      btn.innerHTML = `📅 添加截止 ${timeLabel} 的加费提醒<br><small style="color:var(--text-sub);font-size:13px;margin-top:4px;display:inline-block;">(提醒此时加费至 ¥${th.fee})</small>`;
+      btn.onclick = () => {
+        addSingleEventToCalendar(th, parkTimeMs);
+        hideCalendarModal();
+      };
+      calendarOptions.appendChild(btn);
+    });
+    
+    calendarModal.classList.remove('hidden');
+  }
+
+  function hideCalendarModal() {
+    calendarModal.classList.add('hidden');
+  }
+
+  function addSingleEventToCalendar(th, parkTimeMs) {
+    const eventTimeMs = th.time;
+    const startDate = new Date(eventTimeMs);
+    const endDate = new Date(eventTimeMs + 15 * 60 * 1000); // 15 mins later
+    
+    const summary = `🅿️ 停车缴费提醒 (即将计费 ¥${th.fee})`;
+    const description = `您的停车费即将增加到 ¥${th.fee}，请尽快缴费离场！`;
+
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    
+    if (isAndroid) {
+      // Seamless Android Intent
+      const intentUrl = `intent://#Intent;` +
+        `action=android.intent.action.INSERT;` +
+        `type=vnd.android.cursor.item/event;` +
+        `S.title=${encodeURIComponent(summary)};` +
+        `S.description=${encodeURIComponent(description)};` +
+        `l.beginTime=${eventTimeMs};` +
+        `l.endTime=${endDate.getTime()};` +
+        `end;`;
+      window.location.href = intentUrl;
+    } else {
+      // Seamless iOS/Universal approach
+      const formatICSDate = (date) => {
+        return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+      };
+      
+      const uid = `parking-${parkTimeMs}-${eventTimeMs}@parking-reminder`;
+      const dtstamp = formatICSDate(new Date());
+      const dtstart = formatICSDate(startDate);
+      const dtend = formatICSDate(endDate);
+      
+      const icsContent = [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//Parking Reminder//CN',
+        'CALSCALE:GREGORIAN',
+        'METHOD:PUBLISH',
         'BEGIN:VEVENT',
         `UID:${uid}`,
         `DTSTAMP:${dtstamp}`,
-        `DTSTART:${formatICSDate(startDate)}`,
-        `DTEND:${formatICSDate(endDate)}`,
+        `DTSTART:${dtstart}`,
+        `DTEND:${dtend}`,
         `SUMMARY:${summary}`,
         `DESCRIPTION:${description}`,
         'BEGIN:VALARM',
@@ -377,36 +431,9 @@
         `DESCRIPTION:${summary}`,
         'END:VALARM',
         'END:VEVENT',
-        ''
+        'END:VCALENDAR'
       ].join('\r\n');
-    });
-
-    const icsContent = [
-      'BEGIN:VCALENDAR',
-      'VERSION:2.0',
-      'PRODID:-//Parking Reminder//CN',
-      'CALSCALE:GREGORIAN',
-      'METHOD:PUBLISH',
-      icsEvents.trim(),
-      'END:VCALENDAR'
-    ].join('\r\n');
-
-    const isAndroid = /Android/i.test(navigator.userAgent);
-    
-    if (isAndroid) {
-      // Android must download ICS to import multiple events
-      const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'parking-reminder-batch.ics';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      alert('安卓设备已下载批量日历文件，请在通知栏或文件中点击打开以导入提醒！');
-    } else {
-      // iOS / Universal Data URI supports multiple events natively
+      
       window.location.href = 'data:text/calendar;charset=utf8,' + encodeURIComponent(icsContent);
     }
   }
