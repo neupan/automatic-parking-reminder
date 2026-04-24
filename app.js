@@ -385,39 +385,37 @@
     const startDate = new Date(eventTimeMs);
     const endDate = new Date(eventTimeMs + 15 * 60 * 1000); // 15 mins later
     
-    const summary = `🅿️ 停车缴费提醒 (即将计费 ¥${th.fee})`;
-    const description = `您的停车费即将增加到 ¥${th.fee}，请尽快缴费离场！`;
-
-    const formatICSDate = (date) => {
-      return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-    };
-    
-    const uid = `parking-${parkTimeMs}-${eventTimeMs}@parking-reminder`;
-    const dtstamp = formatICSDate(new Date());
-    const dtstart = formatICSDate(startDate);
-    const dtend = formatICSDate(endDate);
-    
-    const icsContent = [
-      'BEGIN:VCALENDAR',
-      'VERSION:2.0',
-      'PRODID:-//Parking Reminder//CN',
-      'CALSCALE:GREGORIAN',
-      'METHOD:PUBLISH',
-      'BEGIN:VEVENT',
-      `UID:${uid}`,
-      `DTSTAMP:${dtstamp}`,
-      `DTSTART:${dtstart}`,
-      `DTEND:${dtend}`,
-      `SUMMARY:${summary}`,
-      `DESCRIPTION:${description}`,
-      'BEGIN:VALARM',
-      'TRIGGER:-PT10M', // 10 minutes before
-      'ACTION:DISPLAY',
-      `DESCRIPTION:${summary}`,
-      'END:VALARM',
-      'END:VEVENT',
-      'END:VCALENDAR'
-    ].join('\r\n');
+      // Use local floating time instead of UTC to fix parsing bugs in MIUI/Domestic Androids
+      const formatLocalICSDate = (date) => {
+        const pad = n => String(n).padStart(2, '0');
+        return `${date.getFullYear()}${pad(date.getMonth()+1)}${pad(date.getDate())}T${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+      };
+      
+      const uid = `parking-${parkTimeMs}-${eventTimeMs}@parking-reminder`;
+      const dtstamp = formatLocalICSDate(new Date());
+      const dtstart = formatLocalICSDate(startDate);
+      const dtend = formatLocalICSDate(endDate);
+      
+      const icsContent = [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//Parking Reminder//CN',
+        'CALSCALE:GREGORIAN',
+        'BEGIN:VEVENT',
+        `UID:${uid}`,
+        `DTSTAMP:${dtstamp}`,
+        `DTSTART:${dtstart}`,
+        `DTEND:${dtend}`,
+        `SUMMARY:${summary}`,
+        `DESCRIPTION:${description}`,
+        'BEGIN:VALARM',
+        'TRIGGER:-PT10M', // 10 minutes before
+        'ACTION:DISPLAY',
+        `DESCRIPTION:${summary}`,
+        'END:VALARM',
+        'END:VEVENT',
+        'END:VCALENDAR'
+      ].join('\r\n');
 
     const isAndroid = /Android/i.test(navigator.userAgent);
     
